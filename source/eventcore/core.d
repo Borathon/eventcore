@@ -7,10 +7,12 @@ import eventcore.drivers.posix.epoll;
 import eventcore.drivers.posix.kqueue;
 import eventcore.drivers.libasync;
 import eventcore.drivers.winapi.driver;
+import eventcore.drivers.winiocp.driver;
 
 version (EventcoreEpollDriver) alias NativeEventDriver = EpollEventDriver;
 else version (EventcoreKqueueDriver) alias NativeEventDriver = KqueueEventDriver;
 else version (EventcoreWinAPIDriver) alias NativeEventDriver = WinAPIEventDriver;
+else version (EventcoreWinIOCPDriver) alias NativeEventDriver = WinIOCPEventDriver;
 else version (EventcoreLibasyncDriver) alias NativeEventDriver = LibasyncEventDriver;
 else version (EventcoreSelectDriver) alias NativeEventDriver = SelectEventDriver;
 else alias NativeEventDriver = EventDriver;

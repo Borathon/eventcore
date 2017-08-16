@@ -20,6 +20,11 @@ configuration "kqueue" {
 	versions "EventcoreKqueueDriver"
 }
 
+configuration "winiocp" {
+	platforms "windows-x86_64" "windows-x86_mscoff"
+	versions "EventcoreWinIOCPDriver"
+}
+
 configuration "winapi" {
 	platforms "windows-x86_64" "windows-x86_mscoff"
 	versions "EventcoreWinAPIDriver"
@@ -28,6 +33,12 @@ configuration "winapi" {
 configuration "select" {
 	platforms "posix" "windows-x86_64" "windows-x86_mscoff"
 	versions "EventcoreSelectDriver"
+}
+
+configuration "winiocp-optlink" {
+	platforms "windows-x86-dmd"
+	versions "EventcoreWinIOCPDriver"
+	sourceFiles "lib/ws2_32.lib" "lib/kernel32.lib"
 }
 
 configuration "winapi-optlink" {
