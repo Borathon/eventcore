@@ -24,6 +24,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 
 	package {
 		HandleSlot[HANDLE] m_handles; // FIXME: use allocator based hash map
+		IocpHandleSlot[HANDLE] m_iocpHandles; // FIXME: use allocator based hash map
 	}
 
 	this(LoopTimeoutTimerDriver timers)
@@ -33,6 +34,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		m_fileCompletionEvent = () @trusted { return CreateEventW(null, false, false, null); } ();
 		registerEvent(m_fileCompletionEvent);
 		m_completionPort = () @trusted { return CreateIoCompletionPort(INVALID_HANDLE_VALUE, null, 0, 0); } ();
+		registerEvent(m_completionPort);
 	}
 
 	override size_t waiterCount() { return m_waiterCount + m_timers.pendingCount; }
@@ -114,11 +116,11 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 			DWORD bytes_transferred;
 			ULONG_PTR completion_key;
 			LPOVERLAPPED overlapped_ptr;
-			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, timeout_msecs); } ();
+			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, 0); } ();
 			if (iocpResult != 0) {
 				if (overlapped_ptr != null && completion_key != 0) {
 					auto handle = () @trusted { return cast(HANDLE) completion_key; } ();
-					m_handles[handle].specific.invokeCallback(handle, overlapped_ptr, bytes_transferred);
+					m_iocpHandles[handle].dispatchCb(handle, overlapped_ptr, bytes_transferred);
 					got_event = true;
 				}
 			}
@@ -187,6 +189,23 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		assert(h in m_handles, "Handle not in use - cannot free.");
 		m_handles.remove(h);
 	}
+
+	package SlotType* setupIocpSlot(SlotType)(HANDLE h)
+	{
+		assert(h !in m_handles, "Handle already in use.");
+		IocpHandleSlot s;
+		s.refCount = 1;
+		s.specific = SlotType.init;
+		s.dispatchCb = &s.specific.get!SlotType().invokeCallback;
+		m_handles[h] = s;
+		return () @trusted { return &m_iocpHandles[h].specific.get!SlotType(); } ();
+	}
+
+	package void freeIocpSlot(HANDLE h)
+	{
+		assert(h in m_handles, "Handle not in use - cannot free.");
+		m_iocpHandles.remove(h);
+	}
 }
 
 private long currStdTime()
@@ -225,10 +244,39 @@ private struct HandleSlot {
 		}
 		return true;
 	}
-	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
-	{
-		specific.invokeCallback(handle, overlapped_ptr, bytes_transferred);
+	
+}
+private struct IocpHandleSlot {
+	static union SpecificTypes {
+		typeof(null) none;
+		FileSlot files;
+		WatcherSlot watcher;
 	}
+	int refCount;
+	TaggedAlgebraic!SpecificTypes specific;
+
+	@safe nothrow:
+
+	@property ref FileSlot file() { return specific.get!FileSlot; }
+	@property ref WatcherSlot watcher() { return specific.get!WatcherSlot; }
+
+	void addRef()
+	{
+		assert(refCount > 0);
+		refCount++;
+	}
+
+	bool releaseRef(scope void delegate() @safe nothrow on_free)
+	{
+		assert(refCount > 0);
+		if (--refCount == 0) {
+			on_free();
+			return false;
+		}
+		return true;
+	}
+	void delegate(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred) dispatchCb;
+	
 }
 
 package struct FileSlot {
@@ -255,14 +303,14 @@ package struct FileSlot {
 
 	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
 	{
-		IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
+	// 	IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
 
-		switch (overlapped_ptr)
-		{
-			default: assert(false, "Pointer to unknown overlapped struct passed!");
-			case &read.overlapped: read.invokeCallback(status, bytes_transferred); break;
-			case &write.overlapped: write.invokeCallback(status, bytes_transferred); break;
-		}
+	// 	switch (overlapped_ptr)
+	// 	{
+	// 		default: assert(false, "Pointer to unknown overlapped struct passed!");
+	// 		case &read.overlapped: read.invokeCallback(status, bytes_transferred); break;
+	// 		case &write.overlapped: write.invokeCallback(status, bytes_transferred); break;
+	// 	}
 	}
 }
 
@@ -275,7 +323,7 @@ package struct WatcherSlot {
 
 	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
 	{
-		assert(&overlapped == overlapped_ptr);
-		callback();
+		// assert(&overlapped == overlapped_ptr);
+		// callback();
 	}
 }
