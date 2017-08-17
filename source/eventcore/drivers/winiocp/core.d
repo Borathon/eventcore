@@ -16,9 +16,9 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		size_t m_waiterCount;
 		DWORD m_tid;
 		LoopTimeoutTimerDriver m_timers;
-		HANDLE[] m_registeredEvents;
-		void delegate() @safe nothrow[HANDLE] m_eventCallbacks;
-		HANDLE m_fileCompletionEvent;
+		void delegate() @safe nothrow[] m_eventCallbacks;
+
+		HANDLE m_completionPort;
 	}
 
 	package {
@@ -29,8 +29,8 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 	{
 		m_timers = timers;
 		m_tid = () @trusted { return GetCurrentThreadId(); } ();
-		m_fileCompletionEvent = () @trusted { return CreateEventW(null, false, false, null); } ();
-		registerEvent(m_fileCompletionEvent);
+
+		m_completionPort = () @trusted { return CreateIoCompletionPort(INVALID_HANDLE_VALUE, cast(HANDLE)null, 0, 0); } ();
 	}
 
 	override size_t waiterCount() { return m_waiterCount + m_timers.pendingCount; }
@@ -103,57 +103,42 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		import core.time : seconds;
 		import std.algorithm.comparison : min;
 
-		bool got_event;
-
-		if (max_wait > 0.seconds) {
-			DWORD timeout_msecs = max_wait == Duration.max ? INFINITE : cast(DWORD)min(max_wait.total!"msecs", DWORD.max);
-			auto ret = () @trusted { return MsgWaitForMultipleObjectsEx(cast(DWORD)m_registeredEvents.length, m_registeredEvents.ptr,
-				timeout_msecs, QS_ALLEVENTS, MWMO_ALERTABLE|MWMO_INPUTAVAILABLE); } ();
-			
-			if (ret == WAIT_IO_COMPLETION) got_event = true;
-			else if (ret >= WAIT_OBJECT_0 && ret < WAIT_OBJECT_0 + m_registeredEvents.length) {
-				if (auto pc = m_registeredEvents[ret - WAIT_OBJECT_0] in m_eventCallbacks) {
-					(*pc)();
-					got_event = true;
-				}
-			}
-
-			/*if (ret == WAIT_OBJECT_0) {
-				got_event = true;
-				Win32TCPConnection[] to_remove;
-				foreach( fw; m_fileWriters.byKey )
-					if( fw.testFileWritten() )
-						to_remove ~= fw;
-				foreach( fw; to_remove )
-				m_fileWriters.remove(fw);
-			}*/
+		struct IocpStatus {
+			bool got_event;
+			DWORD bytesCopied;
+			ULONG_PTR completionKey;
+			OVERLAPPED* overlapped = null;
 		}
 
-		MSG msg;
-		//uint cnt = 0;
-		while (() @trusted { return PeekMessageW(&msg, null, 0, 0, PM_REMOVE); } ()) {
-			if (msg.message == WM_QUIT && m_exit)
-				break;
-
-			() @trusted {
-				TranslateMessage(&msg);
-				DispatchMessageW(&msg);
-			} ();
-
-			got_event = true;
-
-			// process timers every now and then so that they don't get stuck
-			//if (++cnt % 10 == 0) processTimers();
+		DWORD timeout_msecs = max_wait == Duration.max ? INFINITE : cast(DWORD)min(max_wait.total!"msecs", DWORD.max);
+		IocpStatus status = () @trusted {
+			IocpStatus status;
+			status.got_event = 0 != GetQueuedCompletionStatus(m_completionPort,
+			                                                  &status.bytesCopied,
+															  &status.completionKey,
+															  &status.overlapped,
+															  timeout_msecs);
+			return status;
+		} ();
+		if (status.got_event && status.completionKey < m_eventCallbacks.length) {
+			m_eventCallbacks[cast(size_t)status.completionKey]();
 		}
 
-		return got_event;
+		return status.got_event;
 	}
 
-
-	package void registerEvent(HANDLE event, void delegate() @safe nothrow callback = null)
+	package int registerEvent(void delegate() @safe nothrow callback = null)
 	{
-		m_registeredEvents ~= event;
-		if (callback) m_eventCallbacks[event] = callback;
+		m_eventCallbacks ~= callback;
+		return m_eventCallbacks.length - 1;
+	}
+
+	package void postCustomCompletion(int completionKey) shared
+	{
+		if (!() @trusted { return PostQueuedCompletionStatus(cast(HANDLE)m_completionPort, 0, completionKey, NULL); } ()) {
+			auto errorcode = GetLastError();
+			// TODO: ???
+		}
 	}
 
 	package SlotType* setupSlot(SlotType)(HANDLE h)

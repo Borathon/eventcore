@@ -22,7 +22,7 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 		}
 
 		WinIOCPEventDriverCore m_core;
-		HANDLE m_event;
+		int m_completionKey;
 		EventSlot[EventID] m_events;
 		CRITICAL_SECTION m_mutex;
 		ConsumableQueue!Trigger m_pending;
@@ -32,10 +32,9 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 	this(WinIOCPEventDriverCore core)
 	{
 		m_core = core;
-		m_event = () @trusted { return CreateEvent(null, false, false, null); } ();
 		m_pending = new ConsumableQueue!Trigger; // FIXME: avoid GC allocation
 		InitializeCriticalSection(&m_mutex);
-		m_core.registerEvent(m_event, &triggerPending);
+		m_completionKey = m_core.registerEvent(&triggerPending);
 	}
 
 	void dispose()
@@ -80,7 +79,7 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 			EnterCriticalSection(&thisus.m_mutex);
 			thisus.m_pending.put(Trigger(event, notify_all));
 			LeaveCriticalSection(&thisus.m_mutex);
-			SetEvent(thisus.m_event);
+			m_core.postCustomCompletion(m_completionKey);
 		} ();
 	}
 
