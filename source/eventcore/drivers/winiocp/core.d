@@ -197,7 +197,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		s.refCount = 1;
 		s.specific = SlotType.init;
 		s.dispatchCb = &s.specific.get!SlotType().invokeCallback;
-		m_handles[h] = s;
+		m_iocpHandles[h] = s;
 		return () @trusted { return &m_iocpHandles[h].specific.get!SlotType(); } ();
 	}
 
@@ -216,6 +216,7 @@ private long currStdTime()
 }
 
 private struct HandleSlot {
+	import eventcore.drivers.winiocp.watchers: WatcherSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
@@ -246,7 +247,9 @@ private struct HandleSlot {
 	}
 	
 }
+
 private struct IocpHandleSlot {
+	import eventcore.drivers.winiocp.watchers: WatcherSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
@@ -302,7 +305,7 @@ package struct FileSlot {
 	Direction!true write;
 
 	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
-	{
+	@safe nothrow {
 	// 	IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
 
 	// 	switch (overlapped_ptr)
@@ -311,19 +314,5 @@ package struct FileSlot {
 	// 		case &read.overlapped: read.invokeCallback(status, bytes_transferred); break;
 	// 		case &write.overlapped: write.invokeCallback(status, bytes_transferred); break;
 	// 	}
-	}
-}
-
-package struct WatcherSlot {
-	ubyte[] buffer;
-	OVERLAPPED overlapped;
-	string directory;
-	bool recursive;
-	FileChangesCallback callback;
-
-	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
-	{
-		// assert(&overlapped == overlapped_ptr);
-		// callback();
 	}
 }

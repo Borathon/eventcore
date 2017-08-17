@@ -37,7 +37,7 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 
 		auto id = WatcherID(cast(int)handle);
 
-		auto slot = m_core.setupSlot!WatcherSlot(handle);
+		auto slot = m_core.setupIocpSlot!WatcherSlot(handle);
 		slot.directory = path;
 		slot.recursive = recursive;
 		slot.callback = callback;
@@ -46,7 +46,7 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 			catch (Exception e) assert(false, "Failed to allocate directory watcher buffer.");
 		} ();
 
-		if (!triggerRead(handle, *slot)) {
+		if (!iocpTriggerRead(*slot, handle)) {
 			releaseRef(id);
 			return WatcherID.invalid;
 		}
@@ -72,22 +72,12 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 		});
 	}
 
-	private static nothrow extern(System)
-	void onIOCompleted(DWORD dwError, DWORD cbTransferred, OVERLAPPED* overlapped)
+	package static void invokeWatcherCallback(ref WatcherSlot slot, HANDLE handle, DWORD bytes_ransferred)
 	{
 		import std.conv : to;
 
-		auto handle = overlapped.hEvent; // *file* handle
 		auto id = WatcherID(cast(int)handle);
-		auto slot = () @trusted { return &WinIOCPEventDriver.threadInstance.core.m_handles[handle].watcher(); } ();
-
-		if (dwError != 0) {
-			// FIXME: this must be propagated to the caller
-			//logWarn("Failed to read directory changes: %s", dwError);
-			return;
-		}
-
-		ubyte[] result = slot.buffer[0 .. cbTransferred];
+		ubyte[] result = slot.buffer[0 .. bytes_ransferred];
 		do {
 			assert(result.length >= FILE_NOTIFY_INFORMATION.sizeof);
 			auto fni = () @trusted { return cast(FILE_NOTIFY_INFORMATION*)result.ptr; } ();
@@ -108,10 +98,10 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 			result = result[fni.NextEntryOffset .. $];
 		} while (result.length > 0);
 
-		triggerRead(handle, *slot);
+		iocpTriggerRead(slot, handle);
 	}
 
-	private static bool triggerRead(HANDLE handle, ref WatcherSlot slot)
+	private static bool iocpTriggerRead(ref WatcherSlot slot, HANDLE handle)
 	{
 		enum UINT notifications = FILE_NOTIFY_CHANGE_FILE_NAME|
 			FILE_NOTIFY_CHANGE_DIR_NAME|FILE_NOTIFY_CHANGE_SIZE|
@@ -121,20 +111,28 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 		slot.overlapped.InternalHigh = 0;
 		slot.overlapped.Offset = 0;
 		slot.overlapped.OffsetHigh = 0;
-		slot.overlapped.hEvent = handle;
+		slot.overlapped.hEvent = null;
 
-		BOOL ret;
-		() @trusted {
-			ret = ReadDirectoryChangesW(handle, slot.buffer.ptr, cast(DWORD)slot.buffer.length, slot.recursive,
-				notifications, null, &slot.overlapped, &onIOCompleted);
+		BOOL result = () @trusted {
+			return ReadDirectoryChangesW(handle, slot.buffer.ptr, cast(DWORD)slot.buffer.length, slot.recursive, notifications, null, &slot.overlapped, null);
 		} ();
 
-		if (!ret) {
-			//logError("Failed to read directory changes in '%s'", m_path);
-			return false;
-		}
-		return true;
+		return result != 0;
 	}
 
 	static private HANDLE idToHandle(WatcherID id) @trusted { return cast(HANDLE)cast(int)id; }
+}
+
+package struct WatcherSlot {
+	ubyte[] buffer;
+	OVERLAPPED overlapped;
+	string directory;
+	bool recursive;
+	FileChangesCallback callback;
+
+	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+	@safe nothrow {
+		assert(&overlapped == overlapped_ptr);
+		WinIOCPEventDriverWatchers.invokeWatcherCallback(this, handle, bytes_transferred);
+	}
 }
