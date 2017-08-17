@@ -117,8 +117,8 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, timeout_msecs); } ();
 			if (iocpResult != 0) {
 				if (overlapped_ptr != null && completion_key != 0) {
-					auto handle = () @trusted => cast(HANDLE) completion_key;
-					//m_handles[handle].invokeCallback(handle, overlapped_ptr, bytes_transferred);
+					auto handle = () @trusted { return cast(HANDLE) completion_key; } ();
+					m_handles[handle].invokeCallback(handle, overlapped_ptr, bytes_transferred);
 					got_event = true;
 				}
 			}
@@ -226,7 +226,7 @@ private struct HandleSlot {
 		return true;
 	}
 
-	void invokeCallback(void* handle, OVERLAPPED* overlapped, size_t bytes_transferred)
+	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped, size_t bytes_transferred)
 	{
 	}
 }
