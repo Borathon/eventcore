@@ -118,7 +118,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 			if (iocpResult != 0) {
 				if (overlapped_ptr != null && completion_key != 0) {
 					auto handle = () @trusted { return cast(HANDLE) completion_key; } ();
-					m_handles[handle].invokeCallback(handle, overlapped_ptr, bytes_transferred);
+					m_handles[handle].specific.invokeCallback(handle, overlapped_ptr, bytes_transferred);
 					got_event = true;
 				}
 			}
@@ -225,9 +225,9 @@ private struct HandleSlot {
 		}
 		return true;
 	}
-
-	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped, size_t bytes_transferred)
+	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
 	{
+		specific.invokeCallback(handle, overlapped_ptr, bytes_transferred);
 	}
 }
 
@@ -252,6 +252,18 @@ package struct FileSlot {
 	}
 	Direction!false read;
 	Direction!true write;
+
+	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+	{
+		IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
+
+		switch (overlapped_ptr)
+		{
+			default: assert(false, "Pointer to unknown overlapped struct passed!");
+			case &read.overlapped: read.invokeCallback(status, bytes_transferred); break;
+			case &write.overlapped: write.invokeCallback(status, bytes_transferred); break;
+		}
+	}
 }
 
 package struct WatcherSlot {
@@ -260,4 +272,10 @@ package struct WatcherSlot {
 	string directory;
 	bool recursive;
 	FileChangesCallback callback;
+
+	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+	{
+		assert(&overlapped == overlapped_ptr);
+		callback();
+	}
 }
