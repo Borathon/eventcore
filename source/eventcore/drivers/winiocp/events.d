@@ -35,7 +35,13 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 		m_event = () @trusted { return CreateEvent(null, false, false, null); } ();
 		m_pending = new ConsumableQueue!Trigger; // FIXME: avoid GC allocation
 		InitializeCriticalSection(&m_mutex);
-		m_core.registerEvent(m_event, &triggerPending);
+		EventShimSlot* shim = m_core.setupIocpSlot!EventShimSlot(m_event);
+		void cb() nothrow {
+			try {import std.stdio;writeln("sss");}catch(Exception e){}
+			auto thisus = cast(WinIOCPEventDriverEvents)this;
+			thisus.triggerPending();
+		}
+		shim.triggerCallback = &cb;
 	}
 
 	void dispose()
@@ -80,7 +86,7 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 			EnterCriticalSection(&thisus.m_mutex);
 			thisus.m_pending.put(Trigger(event, notify_all));
 			LeaveCriticalSection(&thisus.m_mutex);
-			SetEvent(thisus.m_event);
+			m_core.postManualCompletion(m_event);
 		} ();
 	}
 
@@ -121,7 +127,7 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 		return true;
 	}
 
-	private void triggerPending()
+	private void triggerPending() nothrow
 	{
 		while (true) {
 			Trigger t;
@@ -139,5 +145,13 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 	private static HANDLE idToHandle(EventID event)
 	@trusted {
 		return cast(HANDLE)cast(int)event;
+	}
+
+	package struct EventShimSlot {
+		void delegate() nothrow triggerCallback;
+		void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+		@safe nothrow {
+			triggerCallback();
+		}
 	}
 }

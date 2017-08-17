@@ -174,6 +174,10 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		if (callback) m_eventCallbacks[event] = callback;
 	}
 
+	package void postManualCompletion(shared HANDLE handle) shared {
+		() @trusted { PostQueuedCompletionStatus(cast(HANDLE)m_completionPort, 0, cast(ULONG_PTR)handle, cast(LPOVERLAPPED)1); } ();
+	}
+
 	package SlotType* setupSlot(SlotType)(HANDLE h)
 	{
 		assert(h !in m_handles, "Handle already in use.");
@@ -252,10 +256,13 @@ private struct HandleSlot {
 private struct IocpHandleSlot {
 	import eventcore.drivers.winiocp.watchers: WinIOCPEventDriverWatchers;
 	alias WatcherSlot = WinIOCPEventDriverWatchers.WatcherSlot;
+	import eventcore.drivers.winiocp.events : WinIOCPEventDriverEvents;
+	alias EventShimSlot = WinIOCPEventDriverEvents.EventShimSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
 		WatcherSlot watcher;
+		EventShimSlot event;
 	}
 	int refCount;
 	TaggedAlgebraic!SpecificTypes specific;
@@ -264,6 +271,7 @@ private struct IocpHandleSlot {
 
 	@property ref FileSlot file() { return specific.get!FileSlot; }
 	@property ref WatcherSlot watcher() { return specific.get!WatcherSlot; }
+	@property ref EventShimSlot event() { return specific.get!EventShimSlot; }
 
 	void addRef()
 	{
