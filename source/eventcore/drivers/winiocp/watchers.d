@@ -72,21 +72,19 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 		});
 	}
 
+	package struct WatcherSlot {
+		ubyte[] buffer;
+		OVERLAPPED overlapped;
+		string directory;
+		bool recursive;
+		FileChangesCallback callback;
 
-
-package struct WatcherSlot {
-	ubyte[] buffer;
-	OVERLAPPED overlapped;
-	string directory;
-	bool recursive;
-	FileChangesCallback callback;
-
-	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
-	@safe nothrow {
-		assert(&overlapped == overlapped_ptr);
-		invokeWatcherCallback(this, handle, bytes_transferred);
+		void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+		@safe nothrow {
+			assert(&overlapped == overlapped_ptr);
+			invokeWatcherCallback(this, handle, bytes_transferred);
+		}
 	}
-}
 
 	static private void invokeWatcherCallback(ref WatcherSlot slot, HANDLE handle, DWORD bytes_transferred)
 	{

@@ -34,6 +34,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		m_fileCompletionEvent = () @trusted { return CreateEventW(null, false, false, null); } ();
 		registerEvent(m_fileCompletionEvent);
 		m_completionPort = () @trusted { return CreateIoCompletionPort(INVALID_HANDLE_VALUE, null, 0, 0); } ();
+		assert(m_completionPort != INVALID_HANDLE_VALUE);
 		registerEvent(m_completionPort);
 	}
 
@@ -116,13 +117,16 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 			DWORD bytes_transferred;
 			ULONG_PTR completion_key;
 			LPOVERLAPPED overlapped_ptr;
-			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, 0); } ();
+			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, timeout_msecs); } ();
 			if (iocpResult != 0) {
 				if (overlapped_ptr != null && completion_key != 0) {
 					auto handle = () @trusted { return cast(HANDLE) completion_key; } ();
 					m_iocpHandles[handle].dispatchCb(handle, overlapped_ptr, bytes_transferred);
 					got_event = true;
 				}
+			} else {
+				import std.conv: to;
+				assert(false, GetLastError().to!string);
 			}
 
 			auto ret = () @trusted { return MsgWaitForMultipleObjectsEx(cast(DWORD)m_registeredEvents.length, m_registeredEvents.ptr,
@@ -190,15 +194,19 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		m_handles.remove(h);
 	}
 
-	package SlotType* setupIocpSlot(SlotType)(HANDLE h)
+	package SlotType* setupIocpSlot(SlotType)(HANDLE handle)
 	{
-		assert(h !in m_handles, "Handle already in use.");
+		assert(handle !in m_handles, "Handle already in use.");
 		IocpHandleSlot s;
 		s.refCount = 1;
 		s.specific = SlotType.init;
 		s.dispatchCb = &s.specific.get!SlotType().invokeCallback;
-		m_iocpHandles[h] = s;
-		return () @trusted { return &m_iocpHandles[h].specific.get!SlotType(); } ();
+		m_iocpHandles[handle] = s;
+		return () @trusted {
+			auto result = CreateIoCompletionPort(handle, m_completionPort, cast(ULONG_PTR) handle, 0); // TODO error handling
+			assert(result == m_completionPort);
+			return &m_iocpHandles[handle].specific.get!SlotType();
+		} ();
 	}
 
 	package void freeIocpSlot(HANDLE h)
