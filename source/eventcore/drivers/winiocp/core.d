@@ -19,6 +19,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		HANDLE[] m_registeredEvents;
 		void delegate() @safe nothrow[HANDLE] m_eventCallbacks;
 		HANDLE m_fileCompletionEvent;
+		HANDLE m_completionPort;
 	}
 
 	package {
@@ -31,6 +32,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		m_tid = () @trusted { return GetCurrentThreadId(); } ();
 		m_fileCompletionEvent = () @trusted { return CreateEventW(null, false, false, null); } ();
 		registerEvent(m_fileCompletionEvent);
+		m_completionPort = () @trusted { return CreateIoCompletionPort(INVALID_HANDLE_VALUE, null, 0, 0); } ();
 	}
 
 	override size_t waiterCount() { return m_waiterCount + m_timers.pendingCount; }
@@ -81,6 +83,7 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 	@trusted {
 		m_exit = true;
 		PostThreadMessageW(m_tid, WM_QUIT, 0, 0);
+		PostQueuedCompletionStatus(m_completionPort, 0, 0, null);
 	}
 
 	override void clearExitFlag()
@@ -107,6 +110,19 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 
 		if (max_wait > 0.seconds) {
 			DWORD timeout_msecs = max_wait == Duration.max ? INFINITE : cast(DWORD)min(max_wait.total!"msecs", DWORD.max);
+
+			DWORD bytes_transferred;
+			ULONG_PTR completion_key;
+			LPOVERLAPPED overlapped_ptr;
+			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, timeout_msecs); } ();
+			if (iocpResult != 0) {
+				if (overlapped_ptr != null && completion_key != 0) {
+					auto handle = () @trusted => cast(HANDLE) completion_key;
+					//m_handles[handle].invokeCallback(handle, overlapped_ptr, bytes_transferred);
+					got_event = true;
+				}
+			}
+
 			auto ret = () @trusted { return MsgWaitForMultipleObjectsEx(cast(DWORD)m_registeredEvents.length, m_registeredEvents.ptr,
 				timeout_msecs, QS_ALLEVENTS, MWMO_ALERTABLE|MWMO_INPUTAVAILABLE); } ();
 			
@@ -208,6 +224,10 @@ private struct HandleSlot {
 			return false;
 		}
 		return true;
+	}
+
+	void invokeCallback(void* handle, OVERLAPPED* overlapped, size_t bytes_transferred)
+	{
 	}
 }
 
