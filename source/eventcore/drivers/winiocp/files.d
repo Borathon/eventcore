@@ -58,7 +58,7 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		if (!() @trusted { return GetHandleInformation(handle, &f); } ())
 			return FileFD.init;
 
-		auto s = m_core.setupSlot!FileSlot(handle);
+		auto s = m_core.setupIocpSlot!FileSlot(handle);
 		s.read.handle = s.write.handle = handle;
 
 		return FileFD(system_handle);
@@ -67,7 +67,7 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 	override void close(FileFD file)
 	{
 		auto h = idToHandle(file);
-		auto slot = () @trusted { return &m_core.m_handles[h].file(); } ();
+		auto slot = () @trusted { return &m_core.m_iocpHandles[h].file(); } ();
 		if (slot.read.handle != INVALID_HANDLE_VALUE) {
 			CloseHandle(h);
 			slot.read.handle = slot.write.handle = INVALID_HANDLE_VALUE;
@@ -91,7 +91,7 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		}
 
 		auto h = idToHandle(file);
-		auto slot = &m_core.m_handles[h].file.write;
+		auto slot = &m_core.m_iocpHandles[h].file.write;
 		slot.bytesTransferred = 0;
 		slot.offset = offset;
 		slot.buffer = buffer;
@@ -108,7 +108,7 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		}
 
 		auto h = idToHandle(file);
-		auto slot = &m_core.m_handles[h].file.read;
+		auto slot = &m_core.m_iocpHandles[h].file.read;
 		slot.bytesTransferred = 0;
 		slot.offset = offset;
 		slot.buffer = buffer;
@@ -120,24 +120,24 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 	override void cancelWrite(FileFD file)
 	{
 		auto h = idToHandle(file);
-		cancelIO!true(h, m_core.m_handles[h].file.write);
+		cancelIO!true(h, m_core.m_iocpHandles[h].file.write);
 	}
 
 	override void cancelRead(FileFD file)
 	{
 		auto h = idToHandle(file);
-		cancelIO!false(h, m_core.m_handles[h].file.read);
+		cancelIO!false(h, m_core.m_iocpHandles[h].file.read);
 	}
 
 	override void addRef(FileFD descriptor)
 	{
-		m_core.m_handles[idToHandle(descriptor)].addRef();
+		m_core.m_iocpHandles[idToHandle(descriptor)].addRef();
 	}
 
 	override bool releaseRef(FileFD descriptor)
 	{
 		auto h = idToHandle(descriptor);
-		return m_core.m_handles[h].releaseRef({
+		return m_core.m_iocpHandles[h].releaseRef({
 			close(descriptor);
 			m_core.freeSlot(h);
 		});
