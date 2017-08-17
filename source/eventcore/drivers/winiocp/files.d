@@ -156,7 +156,7 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		}
 
 		auto nbytes = min(slot.buffer.length, DWORD.max);
-		if (!() @trusted { return fun(h, &slot.buffer[0], nbytes, &slot.overlapped, &onIOFinished!(fun, RO)); } ()) {
+		if (!() @trusted { return fun(h, &slot.buffer[0], nbytes, &slot.overlapped, NULL); } ()) {
 			slot.invokeCallback(IOStatus.error, slot.bytesTransferred);
 		}
 	}
@@ -170,14 +170,11 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		}
 	}
 
-	private static extern(Windows)
-	void onIOFinished(alias fun, bool RO)(DWORD error, DWORD bytes_transferred, OVERLAPPED* overlapped)
+	static private void invokeFileCallback(alias fun, bool RO, SlotType)(SlotType *slot, HANDLE handle, DWORD error, DWORD bytes_transferred)
 	{
-
-		auto slot = () @trusted { return cast(FileSlot.Direction!RO*)overlapped.hEvent; } ();
 		assert(slot !is null);
-		HANDLE h = slot.handle;
-		auto id = FileFD(cast(int)h);
+		
+		auto id = FileFD(cast(int)handle);
 
 		if (!slot.callback) {
 			// request was already cancelled
@@ -195,12 +192,51 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		if (slot.bytesTransferred >= slot.buffer.length || slot.mode != IOMode.all) {
 			slot.invokeCallback(IOStatus.ok, slot.bytesTransferred);
 		} else {
-			startIO!(fun, RO)(h, slot);
+			startIO!(fun, RO)(handle, slot);
 		}
 	}
 
 	private static HANDLE idToHandle(FileFD id)
 	@trusted {
 		return cast(HANDLE)cast(int)id;
+	}
+
+	package struct FileSlot {
+		static struct Direction(bool RO) {
+			OVERLAPPED overlapped;
+			FileIOCallback callback;
+			ulong offset;
+			size_t bytesTransferred;
+			IOMode mode;
+			static if (RO) const(ubyte)[] buffer;
+			else ubyte[] buffer;
+			HANDLE handle; // set to INVALID_HANDLE_VALUE when closed
+
+			void invokeCallback(IOStatus status, size_t bytes_transferred)
+			@safe nothrow {
+				auto cb = this.callback;
+				this.callback = null;
+				assert(cb !is null);
+				cb(FileFD(cast(int)this.handle), status, bytes_transferred);
+			}
+		}
+		Direction!false read;
+		Direction!true write;
+
+		void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+		@safe nothrow {
+			DWORD error = 0; //TODO
+			// TODO figure out error handling
+			// 	IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
+
+		 	if (overlapped_ptr == &read.overlapped)
+		 	{
+				 invokeFileCallback!(ReadFileEx, false)(&read, handle, error, bytes_transferred);
+			} else if (overlapped_ptr == &write.overlapped)
+			{
+				invokeFileCallback!(WriteFileEx, true)(&write, handle, error, bytes_transferred);
+			} else assert(false, "Pointer to unknown overlapped struct passed!");
+		 	
+		}
 	}
 }

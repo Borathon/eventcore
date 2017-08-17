@@ -226,6 +226,8 @@ private long currStdTime()
 private struct HandleSlot {
 	import eventcore.drivers.winiocp.watchers: WinIOCPEventDriverWatchers;
 	alias WatcherSlot = WinIOCPEventDriverWatchers.WatcherSlot;
+	import eventcore.drivers.winiocp.files: WinIOCPEventDriverFiles;
+	alias FileSlot = WinIOCPEventDriverFiles.FileSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
@@ -260,6 +262,8 @@ private struct HandleSlot {
 private struct IocpHandleSlot {
 	import eventcore.drivers.winiocp.watchers: WinIOCPEventDriverWatchers;
 	alias WatcherSlot = WinIOCPEventDriverWatchers.WatcherSlot;
+	import eventcore.drivers.winiocp.files: WinIOCPEventDriverFiles;
+	alias FileSlot = WinIOCPEventDriverFiles.FileSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
@@ -292,37 +296,3 @@ private struct IocpHandleSlot {
 	
 }
 
-package struct FileSlot {
-	static struct Direction(bool RO) {
-		OVERLAPPED overlapped;
-		FileIOCallback callback;
-		ulong offset;
-		size_t bytesTransferred;
-		IOMode mode;
-		static if (RO) const(ubyte)[] buffer;
-		else ubyte[] buffer;
-		HANDLE handle; // set to INVALID_HANDLE_VALUE when closed
-
-		void invokeCallback(IOStatus status, size_t bytes_transferred)
-		@safe nothrow {
-			auto cb = this.callback;
-			this.callback = null;
-			assert(cb !is null);
-			cb(FileFD(cast(int)this.handle), status, bytes_transferred);
-		}
-	}
-	Direction!false read;
-	Direction!true write;
-
-	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
-	@safe nothrow {
-	// 	IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
-
-	// 	switch (overlapped_ptr)
-	// 	{
-	// 		default: assert(false, "Pointer to unknown overlapped struct passed!");
-	// 		case &read.overlapped: read.invokeCallback(status, bytes_transferred); break;
-	// 		case &write.overlapped: write.invokeCallback(status, bytes_transferred); break;
-	// 	}
-	}
-}
