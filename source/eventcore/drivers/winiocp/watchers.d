@@ -72,12 +72,28 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 		});
 	}
 
-	package static void invokeWatcherCallback(ref WatcherSlot slot, HANDLE handle, DWORD bytes_ransferred)
+
+
+package struct WatcherSlot {
+	ubyte[] buffer;
+	OVERLAPPED overlapped;
+	string directory;
+	bool recursive;
+	FileChangesCallback callback;
+
+	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+	@safe nothrow {
+		assert(&overlapped == overlapped_ptr);
+		invokeWatcherCallback(this, handle, bytes_transferred);
+	}
+}
+
+	static private void invokeWatcherCallback(ref WatcherSlot slot, HANDLE handle, DWORD bytes_transferred)
 	{
 		import std.conv : to;
 
 		auto id = WatcherID(cast(int)handle);
-		ubyte[] result = slot.buffer[0 .. bytes_ransferred];
+		ubyte[] result = slot.buffer[0 .. bytes_transferred];
 		do {
 			assert(result.length >= FILE_NOTIFY_INFORMATION.sizeof);
 			auto fni = () @trusted { return cast(FILE_NOTIFY_INFORMATION*)result.ptr; } ();
@@ -101,7 +117,7 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 		iocpTriggerRead(slot, handle);
 	}
 
-	private static bool iocpTriggerRead(ref WatcherSlot slot, HANDLE handle)
+	static private bool iocpTriggerRead(ref WatcherSlot slot, HANDLE handle)
 	{
 		enum UINT notifications = FILE_NOTIFY_CHANGE_FILE_NAME|
 			FILE_NOTIFY_CHANGE_DIR_NAME|FILE_NOTIFY_CHANGE_SIZE|
@@ -121,18 +137,4 @@ final class WinIOCPEventDriverWatchers : EventDriverWatchers {
 	}
 
 	static private HANDLE idToHandle(WatcherID id) @trusted { return cast(HANDLE)cast(int)id; }
-}
-
-package struct WatcherSlot {
-	ubyte[] buffer;
-	OVERLAPPED overlapped;
-	string directory;
-	bool recursive;
-	FileChangesCallback callback;
-
-	void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
-	@safe nothrow {
-		assert(&overlapped == overlapped_ptr);
-		WinIOCPEventDriverWatchers.invokeWatcherCallback(this, handle, bytes_transferred);
-	}
 }

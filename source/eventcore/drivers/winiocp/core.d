@@ -216,7 +216,8 @@ private long currStdTime()
 }
 
 private struct HandleSlot {
-	import eventcore.drivers.winiocp.watchers: WatcherSlot;
+	import eventcore.drivers.winiocp.watchers: WinIOCPEventDriverWatchers;
+	alias WatcherSlot = WinIOCPEventDriverWatchers.WatcherSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
@@ -249,7 +250,8 @@ private struct HandleSlot {
 }
 
 private struct IocpHandleSlot {
-	import eventcore.drivers.winiocp.watchers: WatcherSlot;
+	import eventcore.drivers.winiocp.watchers: WinIOCPEventDriverWatchers;
+	alias WatcherSlot = WinIOCPEventDriverWatchers.WatcherSlot;
 	static union SpecificTypes {
 		typeof(null) none;
 		FileSlot files;
