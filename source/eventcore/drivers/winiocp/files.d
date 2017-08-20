@@ -6,11 +6,6 @@ import eventcore.driver;
 import eventcore.drivers.winiocp.core;
 import eventcore.internal.win32;
 
-private extern(Windows) @trusted nothrow @nogc {
-	BOOL SetEndOfFile(HANDLE hFile);
-	BOOL CancelIoEx(HANDLE hFile, OVERLAPPED* lpOverlapped);
-}
-
 final class WinIOCPEventDriverFiles : EventDriverFiles {
 @safe /*@nogc*/ nothrow:
 	private {
@@ -29,21 +24,22 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 		auto access = mode == FileOpenMode.readWrite || mode == FileOpenMode.createTrunc ? (GENERIC_WRITE | GENERIC_READ) :
 						mode == FileOpenMode.append ? GENERIC_WRITE : GENERIC_READ;
 		auto shareMode = mode == FileOpenMode.read ? FILE_SHARE_READ : 0;
-		auto creation = mode == FileOpenMode.createTrunc ? CREATE_ALWAYS : mode == FileOpenMode.append? OPEN_ALWAYS : OPEN_EXISTING;
+		auto creation = mode == FileOpenMode.createTrunc ? CREATE_ALWAYS : mode == FileOpenMode.append ? OPEN_ALWAYS : OPEN_EXISTING;
 
 		auto handle = () @trusted {
 			scope (failure) assert(false);
 			return CreateFileW(path.toUTF16z, access, shareMode, null, creation,
 				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, null);
 		} ();
+
 		auto errorcode = GetLastError();
 		if (handle == INVALID_HANDLE_VALUE)
 			return FileFD.invalid;
 
 		if (mode == FileOpenMode.createTrunc && errorcode == ERROR_ALREADY_EXISTS) {
-			BOOL ret = SetEndOfFile(handle);
-			if (!ret) {
-				CloseHandle(handle);
+			BOOL result = () @trusted { return SetEndOfFile(handle); } ();
+			if (!result) {
+				() @trusted { return CloseHandle(handle); } ();
 				return FileFD.init;
 			}
 		}
@@ -53,152 +49,155 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 
 	override FileFD adopt(int system_handle)
 	{
-		auto handle = () @trusted { return cast(HANDLE)system_handle; } ();
+		auto handle = () @trusted { return cast(HANDLE) system_handle; } ();
 		DWORD f;
 		if (!() @trusted { return GetHandleInformation(handle, &f); } ())
 			return FileFD.init;
 
-		auto s = m_core.setupIocpSlot!FileSlot(handle);
-		s.read.handle = s.write.handle = handle;
+		m_core.setupSlot!FileSlot(handle);
 
 		return FileFD(system_handle);
 	}
 
-	override void close(FileFD file)
+	override void close(FileFD id)
 	{
-		auto h = idToHandle(file);
-		auto slot = () @trusted { return &m_core.m_iocpHandles[h].file(); } ();
-		if (slot.read.handle != INVALID_HANDLE_VALUE) {
-			CloseHandle(h);
-			slot.read.handle = slot.write.handle = INVALID_HANDLE_VALUE;
+		auto handle = idToHandle(id);
+		with (m_core.m_handles[handle].file) {
+			if (!closed) {
+				if (() @trusted { return CloseHandle(handle); } ()) {
+					closed = true;
+				} else {
+					// TODO: error handling
+				}
+			}
 		}
 	}
 
-	override ulong getSize(FileFD file)
+	override ulong getSize(FileFD id)
 	{
 		LARGE_INTEGER size;
-		auto succeeded = () @trusted { return GetFileSizeEx(idToHandle(file), &size); } ();
+		auto succeeded = () @trusted { return GetFileSizeEx(idToHandle(id), &size); } ();
 		if (!succeeded || size.QuadPart < 0)
 			return ulong.max;
 		return size.QuadPart;
 	}
 
-	override void write(FileFD file, ulong offset, const(ubyte)[] buffer, IOMode mode, FileIOCallback on_write_finish)
+	override void write(FileFD id, ulong offset, const(ubyte)[] buffer, IOMode mode, FileIOCallback on_write_finish)
 	{
 		if (!buffer.length) {
-			on_write_finish(file, IOStatus.ok, 0);
+			on_write_finish(id, IOStatus.ok, 0);
 			return;
 		}
 
-		auto h = idToHandle(file);
-		auto slot = &m_core.m_iocpHandles[h].file.write;
-		slot.bytesTransferred = 0;
-		slot.offset = offset;
-		slot.buffer = buffer;
-		slot.mode = mode;
-		slot.callback = on_write_finish;
-		startIO!(WriteFileEx, true)(h, slot);
+		auto handle = idToHandle(id);
+		with (m_core.m_handles[handle].file) {
+			write.bytesTransferred = 0;
+			write.offset = offset;
+			write.buffer = buffer;
+			write.mode = mode;
+			write.callback = on_write_finish;
+			startIO!(WriteFile, true)(m_core, handle, write);
+		}
 	}
 
-	override void read(FileFD file, ulong offset, ubyte[] buffer, IOMode mode, FileIOCallback on_read_finish)
+	override void read(FileFD id, ulong offset, ubyte[] buffer, IOMode mode, FileIOCallback on_read_finish)
 	{
 		if (!buffer.length) {
-			on_read_finish(file, IOStatus.ok, 0);
+			on_read_finish(id, IOStatus.ok, 0);
 			return;
 		}
 
-		auto h = idToHandle(file);
-		auto slot = &m_core.m_iocpHandles[h].file.read;
-		slot.bytesTransferred = 0;
-		slot.offset = offset;
-		slot.buffer = buffer;
-		slot.mode = mode;
-		slot.callback = on_read_finish;
-		startIO!(ReadFileEx, false)(h, slot);
+		auto handle = idToHandle(id);
+		with (m_core.m_handles[handle].file) {
+			read.bytesTransferred = 0;
+			read.offset = offset;
+			read.buffer = buffer;
+			read.mode = mode;
+			read.callback = on_read_finish;
+			startIO!(ReadFile, false)(m_core, handle, read);
+		}
 	}
 
-	override void cancelWrite(FileFD file)
+	override void cancelWrite(FileFD id)
 	{
-		auto h = idToHandle(file);
-		cancelIO!true(h, m_core.m_iocpHandles[h].file.write);
+		auto handle = idToHandle(id);
+		cancelIO!true(handle, m_core.m_handles[handle].file.write);
 	}
 
-	override void cancelRead(FileFD file)
+	override void cancelRead(FileFD id)
 	{
-		auto h = idToHandle(file);
-		cancelIO!false(h, m_core.m_iocpHandles[h].file.read);
+		auto handle = idToHandle(id);
+		cancelIO!false(handle, m_core.m_handles[handle].file.read);
 	}
 
-	override void addRef(FileFD descriptor)
+	override void addRef(FileFD id)
 	{
-		m_core.m_iocpHandles[idToHandle(descriptor)].addRef();
+		m_core.m_handles[idToHandle(id)].addRef();
 	}
 
-	override bool releaseRef(FileFD descriptor)
+	override bool releaseRef(FileFD id)
 	{
-		auto h = idToHandle(descriptor);
-		return m_core.m_iocpHandles[h].releaseRef({
-			close(descriptor);
-			m_core.freeSlot(h);
+		auto handle = idToHandle(id);
+		return m_core.m_handles[handle].releaseRef({
+			close(id);
+			m_core.freeSlot(handle);
 		});
 	}
 
-	private static void startIO(alias fun, bool RO)(HANDLE h, FileSlot.Direction!RO* slot)
+	private static void startIO(alias fun, bool RO)(WinIOCPEventDriverCore core, HANDLE handle, ref FileSlot.Direction!RO dir)
 	{
-		import std.algorithm.comparison : min;
+		with (dir) {
+			overlapped.Internal = 0;
+			overlapped.InternalHigh = 0;
+			overlapped.Offset = cast(uint)(offset & 0xFFFFFFFF);
+			overlapped.OffsetHigh = cast(uint)(offset >> 32);
+			overlapped.hEvent = null;
 
-		with (slot.overlapped) {
-			Internal = 0;
-			InternalHigh = 0;
-			Offset = cast(uint)(slot.offset & 0xFFFFFFFF);
-			OffsetHigh = cast(uint)(slot.offset >> 32);
-			hEvent = () @trusted { return cast(HANDLE)slot; } ();
-		}
-
-		auto nbytes = min(slot.buffer.length, DWORD.max);
-		if (!() @trusted { return fun(h, &slot.buffer[0], nbytes, &slot.overlapped, NULL); } ()) {
-			slot.invokeCallback(IOStatus.error, slot.bytesTransferred);
+			if (() @trusted { return fun(handle, buffer.ptr, cast(DWORD) (buffer.length > DWORD.max ? DWORD.max: buffer.length), NULL, &overlapped); } ()) {
+				// Operation completed synchronously
+				invokeCallback(handle, IOStatus.ok, bytesTransferred);
+			} else {
+				if (GetLastError() == ERROR_IO_PENDING) {
+					// Operation scheduled for execution
+					core.addWaiter();
+				} else {
+					invokeCallback(handle, IOStatus.error, bytesTransferred);
+				}
+			}
 		}
 	}
 
-	private static void cancelIO(bool RO)(HANDLE h, ref FileSlot.Direction!RO slot)
+	private static void cancelIO(bool RO)(HANDLE handle, ref FileSlot.Direction!RO dir) @trusted
 	{
-		if (slot.callback) {
-			//CancelIoEx(h, &slot.overlapped); // FIXME: currently causes linker errors for DMD due to outdated kernel32.lib files
-			slot.callback = null;
-			slot.buffer = null;
-		}
+		CancelIoEx(handle, &dir.overlapped);
 	}
 
-	static private void invokeFileCallback(alias fun, bool RO, SlotType)(SlotType *slot, HANDLE handle, DWORD error, DWORD bytes_transferred)
+	static private void invokeFileCallback(alias fun, bool RO)(WinIOCPEventDriverCore core, ref FileSlot.Direction!RO dir, HANDLE handle, DWORD error, DWORD bytes_transferred)
 	{
-		assert(slot !is null);
-		
-		auto id = FileFD(cast(int)handle);
+		auto id = FileFD(cast(int) handle);
 
-		if (!slot.callback) {
-			// request was already cancelled
-			return;
+		with (dir) {
+			if (error != 0) {
+				invokeCallback(handle, IOStatus.error, bytesTransferred + bytes_transferred);
+				return;
+			}
+
+			bytesTransferred += bytes_transferred;
+			offset += bytes_transferred;
+
+			if (bytesTransferred >= buffer.length || mode != IOMode.all) {
+				invokeCallback(handle, IOStatus.ok, bytesTransferred);
+			} else {
+				startIO!(fun, RO)(core, handle, dir);
+			}
 		}
 
-		if (error != 0) {
-			slot.invokeCallback(IOStatus.error, slot.bytesTransferred + bytes_transferred);
-			return;
-		}
-
-		slot.bytesTransferred += bytes_transferred;
-		slot.offset += bytes_transferred;
-
-		if (slot.bytesTransferred >= slot.buffer.length || slot.mode != IOMode.all) {
-			slot.invokeCallback(IOStatus.ok, slot.bytesTransferred);
-		} else {
-			startIO!(fun, RO)(handle, slot);
-		}
+		core.removeWaiter();
 	}
 
 	private static HANDLE idToHandle(FileFD id)
 	@trusted {
-		return cast(HANDLE)cast(int)id;
+		return cast(HANDLE) cast(int) id;
 	}
 
 	package struct FileSlot {
@@ -210,33 +209,30 @@ final class WinIOCPEventDriverFiles : EventDriverFiles {
 			IOMode mode;
 			static if (RO) const(ubyte)[] buffer;
 			else ubyte[] buffer;
-			HANDLE handle; // set to INVALID_HANDLE_VALUE when closed
 
-			void invokeCallback(IOStatus status, size_t bytes_transferred)
+			void invokeCallback(HANDLE handle, IOStatus status, size_t bytes_transferred)
 			@safe nothrow {
 				auto cb = this.callback;
 				this.callback = null;
 				assert(cb !is null);
-				cb(FileFD(cast(int)this.handle), status, bytes_transferred);
+				cb(FileFD(cast(int) handle), status, bytes_transferred);
 			}
 		}
+		bool closed;
 		Direction!false read;
 		Direction!true write;
 
-		void invokeCallback(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
+		void dispatchCallback(WinIOCPEventDriverCore core, HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred)
 		@safe nothrow {
 			DWORD error = 0; //TODO
 			// TODO figure out error handling
 			// 	IOStatus status = operlapped_ptr.Internal == 0 ? IOStatus.ok : IOStatus.error;
 
-		 	if (overlapped_ptr == &read.overlapped)
-		 	{
-				 invokeFileCallback!(ReadFileEx, false)(&read, handle, error, bytes_transferred);
-			} else if (overlapped_ptr == &write.overlapped)
-			{
-				invokeFileCallback!(WriteFileEx, true)(&write, handle, error, bytes_transferred);
-			} else assert(false, "Pointer to unknown overlapped struct passed!");
-		 	
+		 	if (&read.overlapped == overlapped_ptr) {
+				invokeFileCallback!(ReadFile, false)(core, read, handle, error, bytes_transferred);
+			} else if (overlapped_ptr == &write.overlapped) {
+				invokeFileCallback!(WriteFile, true)(core, write, handle, error, bytes_transferred);
+			} else assert(false, "Pointer to unknown overlapped struct received!");
 		}
 	}
 }

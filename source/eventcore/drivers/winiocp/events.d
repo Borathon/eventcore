@@ -35,7 +35,7 @@ final class WinIOCPEventDriverEvents : EventDriverEvents {
 		m_event = () @trusted { return CreateEvent(null, false, false, null); } ();
 		m_pending = new ConsumableQueue!Trigger; // FIXME: avoid GC allocation
 		InitializeCriticalSection(&m_mutex);
-		m_core.registerEvent(m_event, &triggerPending);
+		//m_core.registerEvent(m_event, &triggerPending);
 	}
 
 	void dispose()

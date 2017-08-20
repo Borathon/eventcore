@@ -14,28 +14,18 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 	private {
 		bool m_exit;
 		size_t m_waiterCount;
-		DWORD m_tid;
-		LoopTimeoutTimerDriver m_timers;
-		HANDLE[] m_registeredEvents;
-		void delegate() @safe nothrow[HANDLE] m_eventCallbacks;
-		HANDLE m_fileCompletionEvent;
 		HANDLE m_completionPort;
+		LoopTimeoutTimerDriver m_timers;
 	}
 
 	package {
 		HandleSlot[HANDLE] m_handles; // FIXME: use allocator based hash map
-		IocpHandleSlot[HANDLE] m_iocpHandles; // FIXME: use allocator based hash map
 	}
 
 	this(LoopTimeoutTimerDriver timers)
 	{
 		m_timers = timers;
-		m_tid = () @trusted { return GetCurrentThreadId(); } ();
-		m_fileCompletionEvent = () @trusted { return CreateEventW(null, false, false, null); } ();
-		registerEvent(m_fileCompletionEvent);
 		m_completionPort = () @trusted { return CreateIoCompletionPort(INVALID_HANDLE_VALUE, null, 0, 0); } ();
-		assert(m_completionPort != INVALID_HANDLE_VALUE);
-		registerEvent(m_completionPort);
 	}
 
 	override size_t waiterCount() { return m_waiterCount + m_timers.pendingCount; }
@@ -85,7 +75,6 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 	override void exit()
 	@trusted {
 		m_exit = true;
-		PostThreadMessageW(m_tid, WM_QUIT, 0, 0);
 		PostQueuedCompletionStatus(m_completionPort, 0, 0, null);
 	}
 
@@ -109,110 +98,42 @@ final class WinIOCPEventDriverCore : EventDriverCore {
 		import core.time : seconds;
 		import std.algorithm.comparison : min;
 
-		bool got_event;
-
 		if (max_wait > 0.seconds) {
 			DWORD timeout_msecs = max_wait == Duration.max ? INFINITE : cast(DWORD)min(max_wait.total!"msecs", DWORD.max);
 
 			DWORD bytes_transferred;
 			ULONG_PTR completion_key;
 			LPOVERLAPPED overlapped_ptr;
-			auto iocpResult = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, timeout_msecs); } ();
-			if (iocpResult != 0) {
-				if (overlapped_ptr != null && completion_key != 0) {
-					auto handle = () @trusted { return cast(HANDLE) completion_key; } ();
-					m_iocpHandles[handle].dispatchCb(handle, overlapped_ptr, bytes_transferred);
-					got_event = true;
-				}
-			} else {
-				import std.conv: to;
-				assert(false, GetLastError().to!string);
+			auto result = () @trusted { return GetQueuedCompletionStatus(m_completionPort, &bytes_transferred, &completion_key, &overlapped_ptr, timeout_msecs); } ();
+			if (result != 0 && overlapped_ptr != null && completion_key != 0) {
+				auto handle = () @trusted { return cast(HANDLE) completion_key; } ();
+				if (handle in m_handles) m_handles[handle].dispatchCallback(this, handle, overlapped_ptr, bytes_transferred);
+				return true;
 			}
-
-			auto ret = () @trusted { return MsgWaitForMultipleObjectsEx(cast(DWORD)m_registeredEvents.length, m_registeredEvents.ptr,
-				timeout_msecs, QS_ALLEVENTS, MWMO_ALERTABLE|MWMO_INPUTAVAILABLE); } ();
-			
-			if (ret == WAIT_IO_COMPLETION) got_event = true;
-			else if (ret >= WAIT_OBJECT_0 && ret < WAIT_OBJECT_0 + m_registeredEvents.length) {
-				if (auto pc = m_registeredEvents[ret - WAIT_OBJECT_0] in m_eventCallbacks) {
-					(*pc)();
-					got_event = true;
-				}
-			}
-
-			/*if (ret == WAIT_OBJECT_0) {
-				got_event = true;
-				Win32TCPConnection[] to_remove;
-				foreach( fw; m_fileWriters.byKey )
-					if( fw.testFileWritten() )
-						to_remove ~= fw;
-				foreach( fw; to_remove )
-				m_fileWriters.remove(fw);
-			}*/
 		}
 
-		MSG msg;
-		//uint cnt = 0;
-		while (() @trusted { return PeekMessageW(&msg, null, 0, 0, PM_REMOVE); } ()) {
-			if (msg.message == WM_QUIT && m_exit)
-				break;
-
-			() @trusted {
-				TranslateMessage(&msg);
-				DispatchMessageW(&msg);
-			} ();
-
-			got_event = true;
-
-			// process timers every now and then so that they don't get stuck
-			//if (++cnt % 10 == 0) processTimers();
-		}
-
-		return got_event;
+		return false;
 	}
 
-
-	package void registerEvent(HANDLE event, void delegate() @safe nothrow callback = null)
-	{
-		m_registeredEvents ~= event;
-		if (callback) m_eventCallbacks[event] = callback;
-	}
-
-	package SlotType* setupSlot(SlotType)(HANDLE h)
-	{
-		assert(h !in m_handles, "Handle already in use.");
-		HandleSlot s;
-		s.refCount = 1;
-		s.specific = SlotType.init;
-		m_handles[h] = s;
-		return () @trusted { return &m_handles[h].specific.get!SlotType(); } ();
-	}
-
-	package void freeSlot(HANDLE h)
-	{
-		assert(h in m_handles, "Handle not in use - cannot free.");
-		m_handles.remove(h);
-	}
-
-	package SlotType* setupIocpSlot(SlotType)(HANDLE handle)
+	package ref SlotType setupSlot(SlotType)(HANDLE handle)
 	{
 		assert(handle !in m_handles, "Handle already in use.");
-		IocpHandleSlot s;
-		s.refCount = 1;
-		s.specific = SlotType.init;
-		s.dispatchCb = &s.specific.get!SlotType().invokeCallback;
-		m_iocpHandles[handle] = s;
-		return () @trusted {
-			auto result = CreateIoCompletionPort(handle, m_completionPort, cast(ULONG_PTR) handle, 0); // TODO error handling
-			assert(result == m_completionPort);
-			return &m_iocpHandles[handle].specific.get!SlotType();
-		} ();
+		with (m_handles[handle] = HandleSlot.init) {
+			refCount = 1;
+			specific = SlotType.init;
+			dispatchCallback = &specific.get!SlotType().dispatchCallback;
+			
+			// TODO: Error handling
+			() @trusted { CreateIoCompletionPort(handle, m_completionPort, cast(ULONG_PTR) handle, 0); } ();
+
+			return specific.get!SlotType(); 
+		}
 	}
 
-	package void freeIocpSlot(HANDLE h)
+	package void freeSlot(HANDLE handle)
 	{
-		assert(h in m_handles, "Handle not in use - cannot free.");
-		m_iocpHandles.remove(h);
+		assert(handle in m_handles, "Handle not in use - cannot free.");
+		m_handles.remove(handle);
 	}
 }
 
@@ -256,43 +177,7 @@ private struct HandleSlot {
 		}
 		return true;
 	}
-	
-}
 
-private struct IocpHandleSlot {
-	import eventcore.drivers.winiocp.watchers: WinIOCPEventDriverWatchers;
-	alias WatcherSlot = WinIOCPEventDriverWatchers.WatcherSlot;
-	import eventcore.drivers.winiocp.files: WinIOCPEventDriverFiles;
-	alias FileSlot = WinIOCPEventDriverFiles.FileSlot;
-	static union SpecificTypes {
-		typeof(null) none;
-		FileSlot files;
-		WatcherSlot watcher;
-	}
-	int refCount;
-	TaggedAlgebraic!SpecificTypes specific;
-
-	@safe nothrow:
-
-	@property ref FileSlot file() { return specific.get!FileSlot; }
-	@property ref WatcherSlot watcher() { return specific.get!WatcherSlot; }
-
-	void addRef()
-	{
-		assert(refCount > 0);
-		refCount++;
-	}
-
-	bool releaseRef(scope void delegate() @safe nothrow on_free)
-	{
-		assert(refCount > 0);
-		if (--refCount == 0) {
-			on_free();
-			return false;
-		}
-		return true;
-	}
-	void delegate(HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred) dispatchCb;
-	
+	void delegate(WinIOCPEventDriverCore core, HANDLE handle, LPOVERLAPPED overlapped_ptr, size_t bytes_transferred) dispatchCallback;	
 }
 
